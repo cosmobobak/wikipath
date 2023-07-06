@@ -128,6 +128,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+
+        let mut depth_from_root = 0;
+        {let mut idx = idx;
+        while let (Some(parent), _) = &all_links[idx] {
+            idx = *parent;
+            depth_from_root += 1;
+        }}
+
         let links = crawler.crawl(link, &filter).await?;
         // let embeddings = model.encode(&links).unwrap();
         for link in links {
@@ -136,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             all_links.push((Some(idx), link.clone()));
             queue.push(PQEntry {
-                distance: distance::damerau_levenshtein(link_last_part(&link), link_last_part(target_link)) as f32,
+                distance: (depth_from_root + distance::damerau_levenshtein(link_last_part(&link), link_last_part(target_link))) as f32,
                 idx: all_links.len() - 1,
             });
         }
