@@ -1,7 +1,8 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
-use std::{collections::{HashMap, VecDeque}, time::Instant, io::Write};
+use std::{collections::{HashMap, VecDeque, BinaryHeap}, time::Instant, io::Write, cmp::Reverse};
 
+use rust_bert::pipelines::sentence_embeddings::{SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType};
 use scraper::Html;
 use scraper::Selector;
 
@@ -47,6 +48,44 @@ impl Crawler {
     }
 }
 
+fn link_last_part(link: &str) -> &str {
+    link.split('/').last().unwrap()
+}
+
+fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len());
+    let mut sum = 0.0;
+    for i in 0..a.len() {
+        sum += (a[i] - b[i]).powi(2);
+    }
+    sum.sqrt()
+}
+
+#[derive(Clone, Copy)]
+struct PQEntry {
+    distance: f32,
+    idx: usize,
+}
+
+impl PartialEq for PQEntry {
+    fn eq(&self, other: &Self) -> bool {
+        f32::total_cmp(&self.distance, &other.distance) == std::cmp::Ordering::Equal
+            && self.idx == other.idx
+    }
+}
+impl Eq for PQEntry {}
+
+impl PartialOrd for PQEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(f32::total_cmp(&other.distance, &self.distance).then(self.idx.cmp(&other.idx)))
+    }
+}
+impl Ord for PQEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        f32::total_cmp(&other.distance, &self.distance).then(self.idx.cmp(&other.idx))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
@@ -60,18 +99,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut crawler = Crawler::new();
 
-    // just a simple BFS
+    let model = SentenceEmbeddingsBuilder::remote(
+        SentenceEmbeddingsModelType::AllMiniLmL12V2
+    ).create_model()?;
+
+    let source_embedding = model.encode(&[link_last_part(source_link)]).unwrap().into_iter().next().unwrap();
+    let target_embedding = model.encode(&[link_last_part(target_link)]).unwrap().into_iter().next().unwrap();
+
+    // just a simple best-first search
     let mut all_links = Vec::new();
-    let mut queue = VecDeque::new();
+    let mut queue = BinaryHeap::new();
     // push the source link with no parent
     all_links.push((None, source_link.to_string()));
     // push the source link to the queue
-    queue.push_back(0);
+    queue.push(PQEntry {
+        distance: euclidean_distance(&source_embedding, &target_embedding),
+        idx: 0,
+    });
 
     let start = Instant::now();
 
     let mut last = None;
-    while let Some(idx) = queue.pop_front() {
+    while let Some(PQEntry { idx, .. }) = queue.pop() {
         let (_, link) = &all_links[idx];
         if link == target_link {
             last = Some(idx);
@@ -80,12 +129,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let links = crawler.crawl(link, &filter).await?;
-        for link in links {
-            if all_links.iter().any(|(_, l)| l == &link) {
+        let embeddings = model.encode(&links).unwrap();
+        for (link, embedding) in links.iter().zip(embeddings) {
+            if all_links.iter().any(|(_, l)| l == link) {
                 continue;
             }
             all_links.push((Some(idx), link.clone()));
-            queue.push_back(all_links.len() - 1);
+            queue.push(PQEntry {
+                distance: euclidean_distance(&embedding, &target_embedding),
+                idx: all_links.len() - 1,
+            });
         }
     };
 
