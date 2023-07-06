@@ -1,8 +1,8 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
-use std::{collections::{HashMap, VecDeque, BinaryHeap}, time::Instant, io::Write, cmp::Reverse};
+use std::{collections::{HashMap, BinaryHeap}, time::Instant, io::Write};
 
-use rust_bert::pipelines::sentence_embeddings::{SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType};
+// use rust_bert::pipelines::sentence_embeddings::{SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType};
 use scraper::Html;
 use scraper::Selector;
 
@@ -52,14 +52,14 @@ fn link_last_part(link: &str) -> &str {
     link.split('/').last().unwrap()
 }
 
-fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len());
-    let mut sum = 0.0;
-    for i in 0..a.len() {
-        sum += (a[i] - b[i]).powi(2);
-    }
-    sum.sqrt()
-}
+// fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+//     assert_eq!(a.len(), b.len());
+//     let mut sum = 0.0;
+//     for i in 0..a.len() {
+//         sum += (a[i] - b[i]).powi(2);
+//     }
+//     sum.sqrt()
+// }
 
 #[derive(Clone, Copy)]
 struct PQEntry {
@@ -99,12 +99,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut crawler = Crawler::new();
 
-    let model = SentenceEmbeddingsBuilder::remote(
-        SentenceEmbeddingsModelType::AllMiniLmL12V2
-    ).create_model()?;
+    // let model = SentenceEmbeddingsBuilder::remote(
+    //     SentenceEmbeddingsModelType::AllMiniLmL12V2
+    // ).create_model()?;
 
-    let source_embedding = model.encode(&[link_last_part(source_link)]).unwrap().into_iter().next().unwrap();
-    let target_embedding = model.encode(&[link_last_part(target_link)]).unwrap().into_iter().next().unwrap();
+    // let source_embedding = model.encode(&[link_last_part(source_link)]).unwrap().into_iter().next().unwrap();
+    // let target_embedding = model.encode(&[link_last_part(target_link)]).unwrap().into_iter().next().unwrap();
 
     // just a simple best-first search
     let mut all_links = Vec::new();
@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     all_links.push((None, source_link.to_string()));
     // push the source link to the queue
     queue.push(PQEntry {
-        distance: euclidean_distance(&source_embedding, &target_embedding),
+        distance: distance::damerau_levenshtein(link_last_part(source_link), link_last_part(target_link)) as f32,
         idx: 0,
     });
 
@@ -129,14 +129,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let links = crawler.crawl(link, &filter).await?;
-        let embeddings = model.encode(&links).unwrap();
-        for (link, embedding) in links.iter().zip(embeddings) {
-            if all_links.iter().any(|(_, l)| l == link) {
+        // let embeddings = model.encode(&links).unwrap();
+        for link in links {
+            if all_links.iter().any(|(_, l)| l == &link) {
                 continue;
             }
             all_links.push((Some(idx), link.clone()));
             queue.push(PQEntry {
-                distance: euclidean_distance(&embedding, &target_embedding),
+                distance: distance::damerau_levenshtein(link_last_part(&link), link_last_part(target_link)) as f32,
                 idx: all_links.len() - 1,
             });
         }

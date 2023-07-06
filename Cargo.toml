@@ -10,4 +10,5 @@ reqwest = "0.11.18"
 scraper = "0.17.1"
 tokio = { version = "1.29.1", features = ["full"] }
 pathfinding = "4.3.0"
-rust-bert = "0.21.0"
+# rust-bert = "0.21.0"
+distance = "0.4.0"
