@@ -1,0 +1,14 @@
+beautifulsoup4==4.12.2
+certifi==2023.5.7
+charset-normalizer==3.1.0
+colorama==0.4.6
+filelock==3.12.2
+gdown==4.7.1
+idna==3.4
+numpy==1.25.0
+PySocks==1.7.1
+requests==2.31.0
+six==1.16.0
+soupsieve==2.4.1
+tqdm==4.65.0
+urllib3==2.0.3
