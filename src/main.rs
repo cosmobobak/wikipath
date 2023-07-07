@@ -1,15 +1,18 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
-use std::{collections::{HashMap, BinaryHeap}, time::Instant, io::Write};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    io::Write,
+    time::Instant,
+};
 
-// use rust_bert::pipelines::sentence_embeddings::{SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType};
 use scraper::Html;
 use scraper::Selector;
 
 const PREFIX: &str = "https://en.wikipedia.org/wiki/";
 
 struct Crawler {
-    cache: HashMap<String, Vec<String>>,
+    cache: HashMap<String, Vec<(String, String)>>,
 }
 
 impl Crawler {
@@ -20,7 +23,10 @@ impl Crawler {
     }
 
     // visit a link and return all the links found on that page
-    async fn crawl_uncached(link: &str, prefix: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    async fn crawl_uncached(
+        link: &str,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let mut links = Vec::new();
         println!("[#] requesting {link}");
         std::io::stdout().flush().unwrap();
@@ -28,16 +34,23 @@ impl Crawler {
         let document = Html::parse_document(&body);
         for node in document.select(&Selector::parse("a").unwrap()) {
             let href = node.value().attr("href").unwrap_or("");
-            if href.starts_with(PREFIX) && !href.contains(':') {
-                links.push(href.to_string());
+            let link = if href.starts_with(PREFIX) && !href.contains(':') {
+                href.to_string()
             } else if href.starts_with("/wiki/") && !href.contains(':') {
-                links.push(format!("{prefix}{href}"));
-            }
+                format!("{prefix}{href}")
+            } else {
+                continue;
+            };
+            links.push((link, node.inner_html()));
         }
         Ok(links)
     }
 
-    async fn crawl(&mut self, link: &str, prefix: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    async fn crawl(
+        &mut self,
+        link: &str,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         if let Some(links) = self.cache.get(link) {
             return Ok(links.clone());
         }
@@ -60,6 +73,11 @@ fn link_last_part(link: &str) -> &str {
 //     }
 //     sum.sqrt()
 // }
+
+struct Node {
+    parent: Option<usize>,
+    link: String,
+}
 
 #[derive(Clone, Copy)]
 struct PQEntry {
@@ -86,6 +104,60 @@ impl Ord for PQEntry {
     }
 }
 
+async fn search(
+    target_link: &str,
+    queue: &mut BinaryHeap<PQEntry>,
+    all_links: &mut Vec<Node>,
+    crawler: &mut Crawler,
+    filter: &str,
+) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+    while let Some(PQEntry { idx, .. }) = queue.pop() {
+        let Node { link, .. } = &all_links[idx];
+        if link == target_link {
+            println!();
+            return Ok(Some(idx));
+        }
+
+        let mut depth_from_root = 0;
+        {
+            let mut idx = idx;
+            while let Node {
+                parent: Some(parent),
+                ..
+            } = &all_links[idx]
+            {
+                idx = *parent;
+                depth_from_root += 1;
+            }
+        }
+
+        let links = crawler.crawl(link, &filter).await?;
+        for (link, _) in links {
+            if all_links.iter().any(|Node { link: l, .. }| l == &link) {
+                continue;
+            }
+            all_links.push(Node {
+                parent: Some(idx),
+                link: link.clone(),
+            });
+            queue.push(PQEntry {
+                distance: (depth_from_root
+                    + distance::damerau_levenshtein(
+                        link_last_part(&link),
+                        link_last_part(target_link),
+                    )) as f32,
+                idx: all_links.len() - 1,
+            });
+            if &link == target_link {
+                println!();
+                return Ok(Some(all_links.len() - 1));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
@@ -94,79 +166,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     };
 
-    let domain = reqwest::Url::parse(source_link)?.domain().unwrap().to_string();
+    let domain = reqwest::Url::parse(source_link)?
+        .domain()
+        .unwrap()
+        .to_string();
     let filter = format!("https://{domain}");
 
     let mut crawler = Crawler::new();
-
-    // let model = SentenceEmbeddingsBuilder::remote(
-    //     SentenceEmbeddingsModelType::AllMiniLmL12V2
-    // ).create_model()?;
-
-    // let source_embedding = model.encode(&[link_last_part(source_link)]).unwrap().into_iter().next().unwrap();
-    // let target_embedding = model.encode(&[link_last_part(target_link)]).unwrap().into_iter().next().unwrap();
 
     // just a simple best-first search
     let mut all_links = Vec::new();
     let mut queue = BinaryHeap::new();
     // push the source link with no parent
-    all_links.push((None, source_link.to_string()));
+    all_links.push(Node {
+        parent: None,
+        link: source_link.to_string(),
+    });
     // push the source link to the queue
     queue.push(PQEntry {
-        distance: distance::damerau_levenshtein(link_last_part(source_link), link_last_part(target_link)) as f32,
+        distance: distance::damerau_levenshtein(
+            link_last_part(source_link),
+            link_last_part(target_link),
+        ) as f32,
         idx: 0,
     });
 
     let start = Instant::now();
 
-    let mut last = None;
-    while let Some(PQEntry { idx, .. }) = queue.pop() {
-        let (_, link) = &all_links[idx];
-        if link == target_link {
-            last = Some(idx);
-            println!();
-            break;
-        }
-
-
-        let mut depth_from_root = 0;
-        {let mut idx = idx;
-        while let (Some(parent), _) = &all_links[idx] {
-            idx = *parent;
-            depth_from_root += 1;
-        }}
-
-        let links = crawler.crawl(link, &filter).await?;
-        // let embeddings = model.encode(&links).unwrap();
-        for link in links {
-            if all_links.iter().any(|(_, l)| l == &link) {
-                continue;
-            }
-            all_links.push((Some(idx), link.clone()));
-            queue.push(PQEntry {
-                distance: (depth_from_root + distance::damerau_levenshtein(link_last_part(&link), link_last_part(target_link))) as f32,
-                idx: all_links.len() - 1,
-            });
-        }
-    };
-
-    let Some(last) = last else {
+    let Some(last) = search(
+        target_link,
+        &mut queue,
+        &mut all_links,
+        &mut crawler,
+        &filter,
+    ).await? else {
         eprintln!("Could not find link: {target_link}");
         std::process::exit(1);
     };
+
     println!("Found link: {target_link}");
     println!("Path:");
     let mut links = Vec::new();
     let mut idx = last;
-    while let (Some(parent), link) = &all_links[idx] {
+    while let Node {
+        parent: Some(parent),
+        link,
+    } = &all_links[idx]
+    {
         links.push(link);
         idx = *parent;
     }
+    links.push(source_link);
     for (i, link) in links.iter().rev().enumerate() {
         println!("{i}: {link}");
     }
 
-    println!("Took: {} seconds", start.elapsed().as_secs());
+    println!("Took: {:.2} seconds", start.elapsed().as_secs_f64());
 
     Ok(())
 }
