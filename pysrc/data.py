@@ -38,8 +38,8 @@ def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
 
 def embed_sentence(sentence: str) -> np.ndarray:
     vectors = load_word_vectors()
-    # split on spaces, underscore, brackets, and hyphens
-    words = re.split(r"[\s\(\)\[\]\{\}_-]+", sentence)
+    # split on spaces, underscore, brackets, hyphens, and hashtags
+    words = re.split(r"[\s\(\)\[\]\{\}_\-#]", sentence)
     # normalise: trim, remove empty strings, and lowercase
     words = [w.strip().lower() for w in words if w.strip()]
     vecs = [vectors[w] for w in words if w in vectors]
