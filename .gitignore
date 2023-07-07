@@ -1,2 +1,7 @@
 /target
 distiluse-base-multilingual-cased
+venv
+.vscode
+pysrc/__pycache__/data.cpython-311.pyc
+.gitignore
+data/words.pkl
