@@ -1,7 +1,7 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
 use std::{
-    collections::{BinaryHeap, HashMap},
+    collections::{hash_map::Entry, BinaryHeap, HashMap},
     io::Write,
     time::Instant,
 };
@@ -12,7 +12,7 @@ use scraper::Selector;
 const PREFIX: &str = "https://en.wikipedia.org/wiki/";
 
 struct Crawler {
-    cache: HashMap<String, Vec<(String, String)>>,
+    cache: HashMap<String, Vec<String>>,
 }
 
 impl Crawler {
@@ -26,7 +26,7 @@ impl Crawler {
     async fn crawl_uncached(
         link: &str,
         prefix: &str,
-    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let mut links = Vec::new();
         println!("[#] requesting {link}");
         std::io::stdout().flush().unwrap();
@@ -41,7 +41,7 @@ impl Crawler {
             } else {
                 continue;
             };
-            links.push((link, node.inner_html()));
+            links.push(link);
         }
         Ok(links)
     }
@@ -50,14 +50,15 @@ impl Crawler {
         &mut self,
         link: &str,
         prefix: &str,
-    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-        if let Some(links) = self.cache.get(link) {
-            return Ok(links.clone());
+    ) -> Result<&[String], Box<dyn std::error::Error>> {
+        let entry = self.cache.entry(link.to_string());
+        match entry {
+            Entry::Occupied(entry) => Ok(entry.into_mut().as_slice()),
+            Entry::Vacant(entry) => {
+                let links = Self::crawl_uncached(link, prefix).await?;
+                Ok(entry.insert(links).as_slice())
+            }
         }
-
-        let res = Self::crawl_uncached(link, prefix).await?;
-        self.cache.insert(link.to_string(), res.clone());
-        Ok(res)
     }
 }
 
@@ -132,8 +133,8 @@ async fn search(
         }
 
         let links = crawler.crawl(link, &filter).await?;
-        for (link, _) in links {
-            if all_links.iter().any(|Node { link: l, .. }| l == &link) {
+        for link in links {
+            if all_links.iter().any(|Node { link: l, .. }| l == link) {
                 continue;
             }
             all_links.push(Node {
@@ -148,7 +149,7 @@ async fn search(
                     )) as f32,
                 idx: all_links.len() - 1,
             });
-            if &link == target_link {
+            if link == target_link {
                 println!();
                 return Ok(Some(all_links.len() - 1));
             }
