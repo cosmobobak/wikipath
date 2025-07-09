@@ -1,32 +1,34 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(clippy::cast_precision_loss)]
 
 use std::{
-    collections::{hash_map::Entry, BinaryHeap, HashMap},
+    collections::HashMap,
     io::Write,
+    sync::{Arc, RwLock},
     time::Instant,
 };
 
 use scraper::Html;
 use scraper::Selector;
 
+use anyhow::Result;
+
 const PREFIX: &str = "https://en.wikipedia.org/wiki/";
 
-struct Crawler {
-    cache: HashMap<String, Vec<String>>,
+#[derive(Debug, Clone)]
+struct CrawlerCache {
+    cache: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
-impl Crawler {
+impl CrawlerCache {
     fn new() -> Self {
         Self {
-            cache: HashMap::new(),
+            cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     // visit a link and return all the links found on that page
-    async fn crawl_uncached(
-        link: &str,
-        prefix: &str,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    async fn crawl_uncached(link: &str, prefix: &str) -> Result<Vec<String>> {
         let mut links = Vec::new();
         println!("[#] requesting {link}");
         std::io::stdout().flush().unwrap();
@@ -46,34 +48,25 @@ impl Crawler {
         Ok(links)
     }
 
-    async fn crawl(
-        &mut self,
-        link: &str,
-        prefix: &str,
-    ) -> Result<&[String], Box<dyn std::error::Error>> {
-        let entry = self.cache.entry(link.to_string());
-        match entry {
-            Entry::Occupied(entry) => Ok(entry.into_mut().as_slice()),
-            Entry::Vacant(entry) => {
-                let links = Self::crawl_uncached(link, prefix).await?;
-                Ok(entry.insert(links).as_slice())
+    async fn crawl(&self, link: &str, prefix: &str) -> Result<Vec<String>> {
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(links) = cache.get(link) {
+                return Ok(links.clone());
             }
         }
+        let links = Self::crawl_uncached(link, prefix).await?;
+        {
+            let mut cache = self.cache.write().unwrap();
+            cache.insert(link.to_string(), links.clone());
+        }
+        Ok(links)
     }
 }
 
 fn link_last_part(link: &str) -> &str {
-    link.split('/').last().unwrap()
+    link.split('/').next_back().unwrap()
 }
-
-// fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-//     assert_eq!(a.len(), b.len());
-//     let mut sum = 0.0;
-//     for i in 0..a.len() {
-//         sum += (a[i] - b[i]).powi(2);
-//     }
-//     sum.sqrt()
-// }
 
 struct Node {
     parent: Option<usize>,
@@ -96,7 +89,7 @@ impl Eq for PQEntry {}
 
 impl PartialOrd for PQEntry {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(f32::total_cmp(&other.distance, &self.distance).then(self.idx.cmp(&other.idx)))
+        Some(self.cmp(other))
     }
 }
 impl Ord for PQEntry {
@@ -107,12 +100,33 @@ impl Ord for PQEntry {
 
 async fn search(
     target_link: &str,
-    queue: &mut BinaryHeap<PQEntry>,
+    queue: &mut Vec<PQEntry>,
     all_links: &mut Vec<Node>,
-    crawler: &mut Crawler,
+    crawler_cache: CrawlerCache,
     filter: &str,
-) -> Result<Option<usize>, Box<dyn std::error::Error>> {
-    while let Some(PQEntry { idx, .. }) = queue.pop() {
+) -> Result<Option<usize>> {
+    const PREFETCH_SIZE: usize = 10;
+
+    loop {
+        queue.sort_unstable();
+
+        let Some(PQEntry { idx, .. }) = queue.pop() else {
+            println!("[!] Queue is empty, no more links to explore.");
+            return Ok(None);
+        };
+
+        let _prefetch_tasks = queue
+            .iter()
+            .rev()
+            .take(PREFETCH_SIZE)
+            .map(|PQEntry { idx, .. }| {
+                let link = all_links[*idx].link.clone();
+                let filter = filter.to_string();
+                let crawler = crawler_cache.clone();
+                tokio::spawn(async move { crawler.crawl(&link, &filter).await })
+            })
+            .collect::<Vec<_>>();
+
         let Node { link, .. } = &all_links[idx];
         if link == target_link {
             println!();
@@ -132,8 +146,8 @@ async fn search(
             }
         }
 
-        let links = crawler.crawl(link, &filter).await?;
-        for link in links {
+        let links = crawler_cache.crawl(link, filter).await?;
+        for link in &links {
             if all_links.iter().any(|Node { link: l, .. }| l == link) {
                 continue;
             }
@@ -144,23 +158,20 @@ async fn search(
             queue.push(PQEntry {
                 distance: (depth_from_root
                     + distance::damerau_levenshtein(
-                        link_last_part(&link),
+                        link_last_part(link),
                         link_last_part(target_link),
                     )) as f32,
                 idx: all_links.len() - 1,
             });
             if link == target_link {
-                println!();
                 return Ok(Some(all_links.len() - 1));
             }
         }
     }
-
-    Ok(None)
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let [_exe, source_link, target_link] = &args[..] else {
         eprintln!("Usage: {} <source> <target>", args[0]);
@@ -173,11 +184,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
     let filter = format!("https://{domain}");
 
-    let mut crawler = Crawler::new();
+    let crawler = CrawlerCache::new();
 
     // just a simple best-first search
     let mut all_links = Vec::new();
-    let mut queue = BinaryHeap::new();
+    let mut queue = Vec::new();
     // push the source link with no parent
     all_links.push(Node {
         parent: None,
@@ -194,13 +205,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
 
-    let Some(last) = search(
-        target_link,
-        &mut queue,
-        &mut all_links,
-        &mut crawler,
-        &filter,
-    ).await? else {
+    let res = search(target_link, &mut queue, &mut all_links, crawler, &filter).await?;
+
+    println!();
+
+    let Some(last) = res else {
         eprintln!("Could not find link: {target_link}");
         std::process::exit(1);
     };
