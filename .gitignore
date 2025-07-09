@@ -2,6 +2,6 @@
 distiluse-base-multilingual-cased
 venv
 .vscode
-pysrc/__pycache__/data.cpython-311.pyc
+pysrc/__pycache__
 .gitignore
 data/words.pkl

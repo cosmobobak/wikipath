@@ -11,3 +11,4 @@ scraper = "0.17.1"
 tokio = { version = "1.29.1", features = ["full"] }
 pathfinding = "4.3.0"
 distance = "0.4.0"
+anyhow = "1.0.98"
