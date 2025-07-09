@@ -1,11 +1,10 @@
 import numpy as np
 import requests
-import sys
 from bs4 import BeautifulSoup
 from functools import lru_cache
 from dataclasses import dataclass
 
-from pysrc.data import embed_sentence, cosine_similarity
+from pysrc.transformers import embed_sentences, cosine_similarity, EMBEDDING_LEN
 
 PREFIX = "https://en.wikipedia.org/wiki/"
 
@@ -64,8 +63,8 @@ def search(
     Search is done in a best-first manner, and if a path is found, the index of the target link in the links list is returned.
     """
     target = last_part_of_link(target_link)
-    target_embedding = embed_sentence(target)
-    if (target_embedding == np.zeros(300)).all():
+    target_embedding = embed_sentences([target])[0]
+    if (target_embedding == np.zeros(EMBEDDING_LEN)).all():
         print(f"Failed to embed {target}")
         return -1
     seen = set()
@@ -83,8 +82,11 @@ def search(
             hops += 1
         # crawl the link
         hrefs = crawl(link)
+        # batch-embed the links:
+        titles = [last_part_of_link(href) for href in hrefs]
+        embeddings = embed_sentences(titles)
         # add the links to the list
-        for href in hrefs:
+        for href, embedding in zip(hrefs, embeddings):
             # check if we've seen this link before
             if href in seen:
                 continue
@@ -92,7 +94,6 @@ def search(
             # add the link to the list
             all_links.append(Node(idx, href))
             # add the link to the queue
-            embedding = embed_sentence(last_part_of_link(href))
             similarity = cosine_similarity(target_embedding, embedding)
             value = similarity - 0.1 * hops
             queue.append(QueueItem(len(all_links) - 1, value))
@@ -103,33 +104,3 @@ def search(
         # sort the queue
         queue.sort(key=lambda x: x.value)
 
-
-def main():
-    # get start and end links from args
-    if len(sys.argv) != 3:
-        print("Usage: python main.py <start link> <end link>")
-        sys.exit(1)
-    start_link = sys.argv[1]
-    end_link = sys.argv[2]
-    # start the search
-    all_links = [Node(-1, start_link)]
-    queue = [QueueItem(0, 0)]
-    idx = search(end_link, all_links, queue)
-    if idx == -1:
-        print("No path found")
-        sys.exit(1)
-    # print the path
-    print("Path found:")
-    path = []
-    while idx != -1:
-        path.append(all_links[idx].link)
-        idx = all_links[idx].parent
-    path.reverse()
-    max_idx = len(path) - 1
-    padding = len(str(max_idx))
-    for i, link in enumerate(path):
-        print(f"[{i:0{padding}}] {link}")
-
-
-if __name__ == "__main__":
-    main()

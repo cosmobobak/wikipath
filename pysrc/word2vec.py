@@ -14,7 +14,7 @@ WORDS_URL = (
 WORDS_PATH = os.path.join(
     os.path.dirname(__file__), os.path.pardir, "data", "words.pkl"
 )
-
+EMBEDDING_LEN = 300
 
 def _download_words():
     os.makedirs(os.path.dirname(WORDS_PATH), exist_ok=True)
@@ -36,14 +36,18 @@ def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
     return abs(round(out.item() * 100, 2))
 
 
-def embed_sentence(sentence: str) -> np.ndarray:
+def embed_sentences(sentences: list[str]) -> list[np.ndarray]:
     vectors = load_word_vectors()
     # split on spaces, underscore, brackets, hyphens, and hashtags
-    words = re.split(r"[\s\(\)\[\]\{\}_\-#]", sentence)
-    # normalise: trim, remove empty strings, and lowercase
-    words = [w.strip().lower() for w in words if w.strip()]
-    vecs = [vectors[w] for w in words if w in vectors]
-    if not vecs:
-        return np.zeros(300)
-    vec = np.mean(vecs, axis=0)
-    return vec
+    words_list = [re.split(r"[\s\(\)\[\]\{\}_\-#]", s) for s in sentences] 
+    embeddings = []
+    for words in words_list:
+        # normalise: trim, remove empty strings, and lowercase
+        words = [w.strip().lower() for w in words if w.strip()]
+        vecs = [vectors[w] for w in words if w in vectors]
+        if not vecs:
+            embeddings.append(np.zeros(EMBEDDING_LEN))
+            continue
+        vec = np.mean(vecs, axis=0)
+        embeddings.append(vec)
+    return embeddings
